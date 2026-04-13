@@ -17,6 +17,8 @@ class JavInfo:
     rating: str = ""
     tags: list[str] = field(default_factory=list)
     actors: list[str] = field(default_factory=list)
+    poster: str = ""
+    funart: str = ""
 
 
 FIELD_RULES = {
@@ -30,14 +32,14 @@ FIELD_RULES = {
     "評分": (
         "rating",
         lambda node: node.text(strip=True).split("分")[0],
-    ),  # 取評分數字部分
+    ),
     "類別": ("tags", lambda node: [a.text(strip=True) for a in node.css("a")]),
     "演員": ("actors", lambda node: [a.text(strip=True) for a in node.css("a")]),
 }
 
 
 proxies = {
-    "http": "socks5h://127.0.0.1:3067",  # 确认你的代理软件支持 SOCKS5 端口
+    "http": "socks5h://127.0.0.1:3067",
     "https": "socks5h://127.0.0.1:3067",
 }
 
@@ -62,9 +64,9 @@ with requests.Session(
 
                 nav_node = tree.css_first(".panel.movie-panel-info")
                 panel_nodes = nav_node.css(".panel-block")
+
                 if panel_nodes:
                     raw_data = {"title": clean_title}
-
                     for panel in panel_nodes:
                         strong_node = panel.css_first("strong")
                         value_node = panel.css_first(".value")
@@ -78,3 +80,12 @@ with requests.Session(
                                 raw_data[attr_name] = func(value_node)
                     movie_info = JavInfo(**raw_data)
                     print(movie_info)
+
+                cover_node = tree.css_first(".video-cover")
+                print(f"封面节点：{cover_node.html}")
+                if cover_node:
+                    cover_url = cover_node.attributes.get("src")
+                    print(f"封面链接：{cover_url}")
+                    if cover_url:
+                        with open("poster.jpg", "wb") as f:
+                            f.write(session.get(cover_url).content)
