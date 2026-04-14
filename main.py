@@ -1,6 +1,12 @@
+import os
+import random
 import re
+import shutil
+import time
 import xml.etree.ElementTree as ET
+from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from xml.dom import minidom
 
 from curl_cffi import requests
@@ -21,10 +27,8 @@ class JavInfo:
     rating: str = ""
     tags: list[str] = field(default_factory=list)
     actors: list[dict] = field(default_factory=list)
-    poster: str = ""
-    funart: str = ""
 
-    def build_xml_element(self) -> ET.Element:
+    def generate_nfo(self, file_path: str):
         movie = ET.Element("movie")
         ET.SubElement(movie, "title").text = self.code
         ET.SubElement(movie, "originaltitle").text = self.title
@@ -32,25 +36,22 @@ class JavInfo:
         ET.SubElement(movie, "runtime").text = self.duration
         ET.SubElement(movie, "director").text = self.director
         ET.SubElement(movie, "studio").text = self.maker
-        # ET.SubElement(movie, "publisher").text = self.publisher
+        ET.SubElement(movie, "rating").text = self.rating
+
         if self.series:
             set_node = ET.SubElement(movie, "set")
             ET.SubElement(set_node, "name").text = self.series
 
-        ET.SubElement(movie, "rating").text = self.rating
         for tag in self.tags:
             ET.SubElement(movie, "genre").text = tag
             ET.SubElement(movie, "tag").text = tag
+
         for actor in self.actors:
-            actors_element = ET.SubElement(movie, "actor")
-            ET.SubElement(actors_element, "name").text = actor.get("name", "")
-            ET.SubElement(actors_element, "thumb").text = actor.get("thumb", "")
+            actor_el = ET.SubElement(movie, "actor")
+            ET.SubElement(actor_el, "name").text = actor.get("name", "")
+            ET.SubElement(actor_el, "thumb").text = actor.get("thumb", "")
 
-        return movie
-
-    def export_info(self, file_path: str):
-        root = self.build_xml_element()
-        raw_xml = ET.tostring(root, encoding="utf-8")
+        raw_xml = ET.tostring(movie, encoding="utf-8")
         pretty_xml = minidom.parseString(raw_xml).toprettyxml(
             indent="  ", encoding="utf-8"
         )
@@ -58,104 +59,163 @@ class JavInfo:
             f.write(pretty_xml)
 
 
-FIELD_RULES = {
-    "番號": ("code", lambda node: node.text(strip=True)),
-    "日期": ("release_date", lambda node: node.text(strip=True)),
-    "時長": ("duration", lambda node: node.text(strip=True)),
-    "導演": ("director", lambda node: node.text(strip=True)),
-    "片商": ("maker", lambda node: node.text(strip=True)),
-    "發行": ("publisher", lambda node: node.text(strip=True)),
-    "系列": ("series", lambda node: node.text(strip=True)),
-    "評分": (
-        "rating",
-        lambda node: node.text(strip=True).split("分")[0],
-    ),
-    "類別": ("tags", lambda node: [a.text(strip=True) for a in node.css("a")]),
-    "演員": (
-        "actors",
-        lambda node: [
-            (a.text(strip=True), a.attributes.get("href")) for a in node.css("a")
-        ],
-    ),
-}
+class JavScraper:
+    def __init__(self, base_url="https://javdb.com"):
+        self.base_url = base_url
+        self.session = requests.Session(
+            impersonate="chrome120", verify=False, timeout=15
+        )
+        self.rules = {
+            "番號": "code",
+            "日期": "release_date",
+            "時長": "duration",
+            "導演": "director",
+            "片商": "maker",
+            "系列": "series",
+            "評分": "rating",
+        }
+
+    def get_tree(self, url):
+        try:
+            res = self.session.get(url)
+            return LexborHTMLParser(res.content) if res.status_code == 200 else None
+        except Exception as e:
+            print(f"  ❌ 网络请求失败: {e}")
+            return None
+
+    def fetch_actor_thumb(self, href):
+        tree = self.get_tree(f"{self.base_url}{href}?locale=zh")
+        if not tree:
+            return ""
+        avatar = tree.css_first(".avatar")
+        if avatar:
+            style = avatar.attributes.get("style", "")
+            match = re.search(r"url\((.*?)\)", style)
+            return match.group(1).strip("'\"") if match else ""
+        return ""
+
+    def scrape_movie(self, code, save_dir):
+        search_tree = self.get_tree(f"{self.base_url}/search?q={code}")
+        if not search_tree:
+            return None
+
+        item = search_tree.css_first(".movie-list .item a")
+        if not item:
+            return None
+
+        detail_url = f"{self.base_url}{item.attributes.get('href')}?locale=zh"
+        detail_tree = self.get_tree(detail_url)
+        if not detail_tree:
+            return None
+
+        data = {
+            "title": " ".join(
+                detail_tree.css_first(".video-detail .title").text().split()
+            )
+        }
+        for panel in detail_tree.css(".panel.movie-panel-info .panel-block"):
+            if not panel.css_first("strong"):
+                break
+            label = panel.css_first("strong").text(strip=True).replace(":", "")
+            value_node = panel.css_first(".value")
+
+            if label in self.rules:
+                val = value_node.text(strip=True)
+                data[self.rules[label]] = val.split("分")[0] if label == "評分" else val
+            elif label == "類別":
+                data["tags"] = [a.text(strip=True) for a in value_node.css("a")]
+            elif label == "演員":
+                actors = [
+                    (a.text(strip=True), a.attributes.get("href"))
+                    for a in value_node.css("a")
+                ]
+                data["actors"] = [
+                    {"name": n, "thumb": self.fetch_actor_thumb(h)} for n, h in actors
+                ]
+
+        cover = detail_tree.css_first(".video-cover")
+        if cover:
+            self.download_images(cover.attributes.get("src"), save_dir)
+
+        return JavInfo(**data)
+
+    def download_images(self, url, save_path):
+        try:
+            content = self.session.get(url).content
+            fanart_p = Path(save_path) / "fanart.jpg"
+            poster_p = Path(save_path) / "poster.jpg"
+            with open(fanart_p, "wb") as f:
+                f.write(content)
+            with Image.open(fanart_p) as img:
+                w, h = img.size
+                if w > 379:
+                    img.crop((w - 379, 0, w, h)).save(poster_p, quality=95)
+                else:
+                    img.save(poster_p)
+        except Exception as e:
+            print(f"  ⚠️ 图片下载失败: {e}")
 
 
-base_url = "https://javdb.com/"
+def get_clean_code(filename):
+    pattern = r"([A-Z]{2,10})[-_ ]?(\d{3,5})"
+    if m := re.search(pattern, filename.upper()):
+        return f"{m.group(1)}-{m.group(2)}"
+    return None
 
 
-with requests.Session(proxies=None, impersonate="chrome120", verify=False) as session:
-    response = session.get(url=f"{base_url}/search?q=jufe-114")
-    print(response.status_code)
-    if response.status_code == 200:
-        tree = LexborHTMLParser(response.content)
-        node = tree.css_first(".movie-list .item a")
-        if node:
-            link = node.attributes.get("href")
-            response = session.get(f"{base_url}{link}?locale=zh")
-            if response.status_code == 200:
-                print("成功抓取详情页！")
-                tree = LexborHTMLParser(response.content)
-                title_node = tree.css_first(".video-detail .title")
-                if title_node:
-                    clean_title = " ".join(title_node.text().split())
-                    print(f"影片标题：{clean_title}")
+def organize_file(video_path, code, base_path):
+    target_dir = base_path / code
+    target_dir.mkdir(exist_ok=True)
 
-                nav_node = tree.css_first(".panel.movie-panel-info")
-                panel_nodes = nav_node.css(".panel-block")
+    target_path = target_dir / f"{code}{video_path.suffix.lower()}"
 
-                if panel_nodes:
-                    raw_data = {"title": clean_title}
-                    for panel in panel_nodes:
-                        strong_node = panel.css_first("strong")
-                        value_node = panel.css_first(".value")
-                        if strong_node and value_node:
-                            print(
-                                f"{strong_node.text(strip=True)} {value_node.text(strip=True)}"
-                            )
-                            label = strong_node.text(strip=True).replace(":", "")
-                            if label in FIELD_RULES:
-                                attr_name, func = FIELD_RULES[label]
-                                raw_data[attr_name] = func(value_node)
-                    actors = raw_data.pop("actors", [])
-                    processed_actors = []
-                    for name, href in actors:
-                        print(f"演员：{name}，链接：{href}")
-                        actor_item = {"name": name, "thumb": ""}
-                        if href:
-                            try:
-                                actor_res = session.get(f"{base_url}{href}?locale=zh")
-                                if actor_res.status_code == 200:
-                                    a_tree = LexborHTMLParser(actor_res.content)
-                                    avator_node = a_tree.css_first(".avatar")
-                                    if avator_node:
-                                        bg_image = avator_node.attributes.get(
-                                            "style", ""
-                                        )
-                                        match = re.search(r"url\((.*?)\)", bg_image)
-                                        if match:
-                                            image_url = match.group(1).strip("'\"")
-                                        actor_item["thumb"] = image_url
-                            except Exception as e:
-                                print(f"抓取演员{name}头像失败：{e}")
-                        processed_actors.append(actor_item)
-                    raw_data["actors"] = processed_actors
-                    movie_info = JavInfo(**raw_data)
-                    movie_info.export_info("movie.nfo")
-                    print(movie_info)
+    if video_path.absolute() != target_path.absolute():
+        if video_path.parent == target_dir:
+            temp_p = video_path.with_name(video_path.name + ".tmp")
+            video_path.rename(temp_p)
+            temp_p.rename(target_path)
+        else:
+            shutil.move(str(video_path), str(target_path))
+            if video_path.parent != base_path:
+                with suppress(Exception):
+                    if not any(video_path.parent.iterdir()):
+                        video_path.parent.rmdir()
+        print(f"  ✨ 已整理: {target_path.name}")
+    return target_dir, target_path
 
-                cover_node = tree.css_first(".video-cover")
-                print(f"封面节点：{cover_node.html}")
-                if cover_node:
-                    cover_url = cover_node.attributes.get("src")
-                    print(f"封面链接：{cover_url}")
-                    if cover_url:
-                        with open("funart.jpg", "wb") as f:
-                            f.write(session.get(cover_url).content)
-                        with Image.open("funart.jpg") as img:
-                            width, height = img.size
-                            left = width - 379
-                            right = width
-                            upper = 0
-                            lower = height
-                            poster = img.crop((left, upper, right, lower))
-                            poster.save("poster.jpg", quality=95, optimize=True)
+
+def run_scraper(base_dir):
+    scraper = JavScraper()
+    base_path = Path(base_dir)
+    EXTS = {".mp4", ".mkv", ".avi", ".wmv", ".iso", ".rmvb", ".ts"}
+
+    videos = (
+        v
+        for v in base_path.rglob("*")
+        if v.suffix.lower() in EXTS and not v.with_suffix(".nfo").exists()
+    )
+
+    for vid in videos:
+        code = get_clean_code(vid.name)
+        if not code:
+            continue
+
+        print(f"🎬 正在处理: {vid.name}")
+
+        final_dir, final_path = organize_file(vid, code, base_path)
+
+        info = scraper.scrape_movie(code, str(final_dir))
+        if info:
+            info.generate_nfo(str(final_path.with_suffix(".nfo")))
+            print(f"  ✅ 刮削完成: {code}")
+            time.sleep(random.uniform(1, 3))
+        else:
+            print(f"  ❌ 未找到信息: {code}")
+
+
+if __name__ == "__main__":
+    TARGET_PATH = ""
+    if os.path.exists(TARGET_PATH):
+        run_scraper(TARGET_PATH)
+    else:
+        print("错误：目标路径不存在！")
