@@ -10,6 +10,7 @@ from pathlib import Path
 from xml.dom import minidom
 
 from curl_cffi import requests
+from dotenv import load_dotenv
 from PIL import Image
 from selectolax.lexbor import LexborHTMLParser
 
@@ -213,9 +214,10 @@ def run_scraper(base_dir):
             print(f"  ❌ 未找到信息: {code}")
 
 
+load_dotenv()
 if __name__ == "__main__":
-    TARGET_PATH = ""
-    if os.path.exists(TARGET_PATH):
-        run_scraper(TARGET_PATH)
+    path = os.getenv("JAV_BASE_DIR")
+    if path and os.path.exists(path):
+        run_scraper(path)
     else:
         print("错误：目标路径不存在！")

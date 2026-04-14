@@ -8,5 +8,11 @@ dependencies = [
     "curl-cffi>=0.15.0",
     "httpx>=0.28.1",
     "pillow>=12.2.0",
+    "python-dotenv>=1.2.2",
     "selectolax>=0.4.7",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.19.0",
 ]
