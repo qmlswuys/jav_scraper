@@ -82,7 +82,7 @@ class JavScraper:
             res = self.session.get(url)
             return LexborHTMLParser(res.content) if res.status_code == 200 else None
         except Exception as e:
-            print(f"  ❌ 网络请求失败: {e}")
+            print(f"❌ 网络请求失败: {e}")
             return None
 
     def fetch_actor_thumb(self, href):
@@ -155,7 +155,7 @@ class JavScraper:
                 else:
                     img.save(poster_p)
         except Exception as e:
-            print(f"  ⚠️ 图片下载失败: {e}")
+            print(f"⚠️ 图片下载失败: {e}")
 
 
 def get_clean_code(filename):
@@ -182,7 +182,7 @@ def organize_file(video_path, code, base_path):
                 with suppress(Exception):
                     if not any(video_path.parent.iterdir()):
                         video_path.parent.rmdir()
-        print(f"  ✨ 已整理: {target_path.name}")
+        print(f"✨ 已整理: {target_path.name}")
     return target_dir, target_path
 
 
@@ -209,10 +209,10 @@ def run_scraper(base_dir):
         info = scraper.scrape_movie(code, str(final_dir))
         if info:
             info.generate_nfo(str(final_path.with_suffix(".nfo")))
-            print(f"  ✅ 刮削完成: {code}")
+            print(f"✅ 刮削完成: {code}")
             time.sleep(random.uniform(1, 3))
         else:
-            print(f"  ❌ 未找到信息: {code}")
+            print(f"❌ 未找到信息: {code}")
 
 
 load_dotenv()
