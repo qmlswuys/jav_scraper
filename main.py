@@ -61,8 +61,9 @@ class JavInfo:
 
 
 class JavScraper:
-    def __init__(self, base_url="https://javdb.com"):
-        self.base_url = base_url
+    def __init__(self, base_url=None):
+        self.base_url = base_url or os.getenv("JAV_BASE_URL", "https://javdb.com")
+        self.base_url = self.base_url.rstrip("/")
         self.session = requests.Session(
             impersonate="chrome120", verify=False, timeout=15
         )
@@ -216,8 +217,13 @@ def run_scraper(base_dir):
 
 load_dotenv()
 if __name__ == "__main__":
-    path = os.getenv("JAV_BASE_DIR")
-    if path and os.path.exists(path):
-        run_scraper(path)
-    else:
-        print("错误：目标路径不存在！")
+    try:
+        path = os.getenv("JAV_BASE_DIR")
+        if path and os.path.exists(path):
+            run_scraper(path)
+        else:
+            print("错误：目标路径不存在！")
+            print("检查是否正确配置.env文件！")
+    finally:
+        print("\n" + "=" * 30)
+        input("按任意键结束")
